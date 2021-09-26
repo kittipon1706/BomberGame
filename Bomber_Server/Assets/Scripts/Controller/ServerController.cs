@@ -1,40 +1,73 @@
-using LiteNetLib;
-using Newtonsoft.Json.Linq;
-using UnityEngine;
-using System;
 using System.Collections.Generic;
+using UnityEngine;
 
-public class ModelToObjectMapper
+public class ServerController : MonoBehaviour
 {
-    private ServerController serverController;
-    private Dictionary<string, Action<PeerConnection, JObject>> Deserializes;
+    [SerializeField]
+    private Server server;
 
-    private Dictionary<string, Action<PeerConnection, JObject>> CreateDeserializes() => new Dictionary<string, Action<PeerConnection, JObject>>
-    {
-        //TODO [Model.CLASS_NAME] = callFunction,
-        [MovePlayerModel.CLASS_NAME] = OnMovePlayer,
-    };
+    [SerializeField]
+    private PlayerController playerControllerPrefab;
 
-    public ModelToObjectMapper(ServerController serverController)
+    [SerializeField]
+    private CoinController coinController;
+
+    [SerializeField]
+    private SpawnArea spawnArea;
+
+    private Dictionary<int, PlayerController> playerControllers = new Dictionary<int, PlayerController>();
+
+    public Vector3 RandomSpawnPoint() => spawnArea.RandomSpawnPoint();
+
+    public void CreatePlayer(PeerConnection peerConnection)
     {
-        Deserializes = CreateDeserializes();
-        this.serverController = serverController;
+        var playerController = Instantiate(playerControllerPrefab);
+        var id = peerConnection.Id;
+        playerController.Setup(id, server);
+        playerControllers.Add(id, playerController);
+        peerConnection.AddPlayer(playerController);
     }
 
-    public void DeserializeToFunction(NetPeer peer, string json)
+    public void UpdateData()
     {
-        Debug.Log("DeserializeToFunction");
-        var jObject = JObject.Parse(json);
-        if (jObject.TryGetValue("ClassName", out var value))
+        var model = new UpdateModel();
+
+        foreach (var clientConnection in server.PeerConnections.Values)
         {
-            var className = value.ToString();
-            var peerConnection = peer.Tag as PeerConnection;
-            Deserializes[className](peerConnection, jObject);
+            var player = clientConnection.Player;
+            if (player != null)
+            {
+                if (player.isUpdateScore)
+                {
+                    var playerModel = new UpdatePlayerModel();
+                    playerModel.Score = player.Score;
+                    clientConnection.Send(playerModel);
+                    player.isUpdateScore = false;
+                }
+
+                if (player.isUpdatePosition)
+                {
+                    var playerPositionModel = new PlayerPositionModel { PlayerId = player.Id, Position = player.Position };
+                    model.PlayerPositionModels.Add(playerPositionModel);
+                    player.isUpdatePosition = false;
+                }
+            }
         }
-    }
-    private void OnMovePlayer(PeerConnection peerConnection, JObject jObject)
-    {
-        var model = jObject.ToObject<MovePlayerModel>();
-        Debug.Log($"{model.ClassName} : ( x : {model.Target.X}, y : {model.Target.Z} )");
+
+        foreach (var pair in coinController.NewCoinPositions)
+        {
+            var id = pair.Key;
+            var position = new Vector3Model(pair.Value);
+            model.CreateCoins.Add(id, position);
+        }
+        coinController.ResetNewCoins();
+
+        foreach (var coinId in coinController.DeletedCoinIds)
+        {
+            model.DeletedCoins.Add(coinId);
+        }
+        coinController.ResetDeletedCoins();
+
+        server.SendAll(model);
     }
 }
